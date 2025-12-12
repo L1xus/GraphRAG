@@ -29,8 +29,10 @@ def load_pipeline(pdf_path: str, filename: str, neo4j_service: Neo4jService):
     
     entities = graph_data.get('entities', [])
     relationships = graph_data.get('relationships', [])
+    chunks = graph_data.get("chunks", [])
     
     print(f"Extracted {len(entities)} unique entities and {len(relationships)} unique relationships")
+    print(f"Generated {len(chunks)} chunks")
     
     print("\nStep 3: Storing in Neo4j knowledge graph...")
     
@@ -38,6 +40,17 @@ def load_pipeline(pdf_path: str, filename: str, neo4j_service: Neo4jService):
         # Create document node
         neo4j_service.create_document_node(doc_id, filename, text)
         print(f"✓ Created document node: {filename}")
+
+        # Create chunk nodes with embeddings for semantic search
+        try:
+            print("Generating embeddings for chunks...")
+            chunk_embeddings = embed_text(chunks)
+            for chunk_text, emb in zip(chunks, chunk_embeddings):
+                chunk_id = str(uuid.uuid4())
+                neo4j_service.create_chunk_node(chunk_id, chunk_text, emb, doc_id)
+            print(f"✓ Persisted {len(chunks)} chunk nodes with embeddings")
+        except Exception as e:
+            print(f"⚠️ Failed to embed/store chunks: {e}")
         
         # Create entity nodes
         for i, entity in enumerate(entities):
@@ -48,7 +61,7 @@ def load_pipeline(pdf_path: str, filename: str, neo4j_service: Neo4jService):
         
         # Create relationships
         for i, rel in enumerate(relationships):
-            neo4j_service.create_relationship(rel.from_entity, rel.to, rel.type)
+            neo4j_service.create_relationship(rel.from_entity, rel.to_entity, rel.type)
             if (i + 1) % 10 == 0:
                 print(f"  ✓ Created {i + 1}/{len(relationships)} relationships...")
         print(f"  ✓ Created all {len(relationships)} relationships")
@@ -65,7 +78,8 @@ def load_pipeline(pdf_path: str, filename: str, neo4j_service: Neo4jService):
             "stats": {
                 "text_length": len(text),
                 "entities_count": len(entities),
-                "relationships_count": len(relationships)
+                "relationships_count": len(relationships),
+                "chunks_count": len(chunks)
             }
         }
         

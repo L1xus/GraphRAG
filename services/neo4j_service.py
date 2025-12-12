@@ -63,7 +63,19 @@ class Neo4jService:
                     d.content = $content,
                     d.created_at = datetime()
             """, doc_id=doc_id, filename=filename, content=content)
-    
+
+    def create_chunk_node(self, chunk_id: str, text: str, embedding: List[float], doc_id: str):
+        """store embedding as list property"""
+        with self.driver.session() as session:
+            session.run("""
+                MERGE (c:Chunk {id: $chunk_id})
+                SET c.text = $text,
+                    c.embedding = $embedding
+                WITH c
+                MATCH (d:Document {id: $doc_id})
+                MERGE (d)-[:HAS_CHUNK]->(c)
+            """, chunk_id=chunk_id, text=text, embedding=embedding, doc_id=doc_id)  
+
     def create_entity(self, entity_name: str, entity_type: str, doc_id: str):
         """Create an entity node and link it to the document"""
         with self.driver.session() as session:
@@ -84,7 +96,6 @@ class Neo4jService:
                 MERGE (e1)-[r:RELATES_TO {type: $rel_type}]->(e2)
             """, from_name=from_entity, to_name=to_entity, rel_type=rel_type)
     
-   
     def search_graph(self, search_text: str, limit: int = 5):
         with self.driver.session() as session:
             result = session.run("""
@@ -115,35 +126,35 @@ class Neo4jService:
                 })
 
             return results
-    
-    def get_document_context(self, doc_id: str):
-        """Get full context for a document including all entities and relationships"""
+
+    def fetch_all_chunks_with_embeddings(self):
+        """Return list of chunks with id, text and embedding"""
         with self.driver.session() as session:
             result = session.run("""
-                MATCH (d:Document {id: $doc_id})
-                OPTIONAL MATCH (e:Entity)-[:MENTIONED_IN]->(d)
-                OPTIONAL MATCH (e)-[r:RELATES_TO]->(e2:Entity)
-                RETURN 
-                    d.filename as filename,
-                    d.content as content,
-                    collect(DISTINCT {
-                        entity: e.name,
-                        type: e.type
-                    }) as entities,
-                    collect(DISTINCT {
-                        from: e.name,
-                        to: e2.name,
-                        type: r.type
-                    }) as relationships
-            """, doc_id=doc_id)
-            
-            record = result.single()
-            if not record:
-                return None
-            
-            return {
-                'filename': record['filename'],
-                'content': record['content'],
-                'entities': [e for e in record['entities'] if e['entity']],
-                'relationships': [r for r in record['relationships'] if r['from'] and r['to']]
-            }
+                MATCH (c:Chunk)<-[:HAS_CHUNK]-(d:Document)
+                RETURN c.id AS id, c.text AS text, c.embedding AS embedding, d.id as doc_id, d.filename as filename
+            """)
+            rows = []
+            for rec in result:
+                emb = rec["embedding"]
+                rows.append({
+                    "id": rec["id"],
+                    "text": rec["text"],
+                    "embedding": np.array(emb, dtype=float) if emb else None,
+                    "doc_id": rec["doc_id"],
+                    "filename": rec["filename"]
+                })
+            return rows
+
+    def get_entity_neighborhood(self, entity_name: str, depth: int = 1, limit: int = 50):
+        with self.driver.session() as session:
+            q = """
+                MATCH p=(e:Entity {name: $name})-[r*1..$depth]-(m)
+                RETURN p LIMIT $limit
+            """
+            result = session.run(q, name=entity_name, depth=depth, limit=limit)
+            graphs = []
+            for rec in result:
+                p = rec["p"]
+                graphs.append(p)
+            return graphs

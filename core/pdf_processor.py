@@ -5,6 +5,10 @@ from agno.knowledge.document.base import Document
 from agno.models.openai import OpenAIChat
 from agno.agent import Agent
 from core.agents import entities_extraction_agent
+import openai
+import os
+
+openai.api_key = os.getenv("OPENAI_API_KEY")
 
 def extract_text_from_pdf(file_path: str) -> str:
     try:
@@ -43,6 +47,14 @@ def chunk_text(text: str) -> List[str]:
         fallback_size = 1000
         return [text[i:i + fallback_size] for i in range(0, len(text), fallback_size)]
 
+def embed_text(texts: List[str]) -> List[List[float]]:
+    embeddings = []
+    for t in texts:
+        resp = openai.Embedding.create(input=t, model="text-embedding-3-small")
+        emb = resp["data"][0]["embedding"]
+        embeddings.append(emb)
+    return embeddings
+
 def extract_entities_from_chunk(chunk: str, extraction_agent: Agent) -> Dict[str, Any]:
     try:
         result = extraction_agent.run(chunk)
@@ -50,7 +62,6 @@ def extract_entities_from_chunk(chunk: str, extraction_agent: Agent) -> Dict[str
     except Exception as e:
         print(f"⚠️ Extraction failed on chunk: {e}")
         return {"entities": [], "relationships": []}
-
 
 def extract_entities_and_relationships(text: str) -> Dict[str, Any]:
     extraction_agent = entities_extraction_agent()
@@ -75,7 +86,7 @@ def extract_entities_and_relationships(text: str) -> Dict[str, Any]:
     seen = set()
     unique_rels = []
     for r in all_relationships:
-        key = (r.from_entity, r.to, r.type)
+        key = (r.from_entity, r.to_entity, r.type)
         if key not in seen:
             seen.add(key)
             unique_rels.append(r)
@@ -83,4 +94,5 @@ def extract_entities_and_relationships(text: str) -> Dict[str, Any]:
     return {
         "entities": unique_entities,
         "relationships": unique_rels,
+        "chunks": chunks
     }

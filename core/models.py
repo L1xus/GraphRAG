@@ -1,14 +1,13 @@
 from pydantic import BaseModel
 from typing import List
 
-
 class Entity(BaseModel):
     name: str
     type: str
 
 class Relationship(BaseModel):
     from_entity: str
-    to: str
+    to_entity: str
     type: str
 
 class ExtractedEntities(BaseModel):
