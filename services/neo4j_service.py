@@ -1,7 +1,9 @@
 import os
 import time
 from neo4j import GraphDatabase
-
+from core.pdf_processor import embed_text
+import numpy as np
+from typing import List
 
 class Neo4jService:
     def __init__(self):
@@ -146,15 +148,24 @@ class Neo4jService:
                 })
             return rows
 
-    def get_entity_neighborhood(self, entity_name: str, depth: int = 1, limit: int = 50):
-        with self.driver.session() as session:
-            q = """
-                MATCH p=(e:Entity {name: $name})-[r*1..$depth]-(m)
-                RETURN p LIMIT $limit
-            """
-            result = session.run(q, name=entity_name, depth=depth, limit=limit)
-            graphs = []
-            for rec in result:
-                p = rec["p"]
-                graphs.append(p)
-            return graphs
+    def semantic_search(self, query: str, top_k: int = 5):
+        """Semantic search using vector similarity"""
+        query_embedding = embed_text([query])[0]
+        
+        chunks = self.fetch_all_chunks_with_embeddings()
+        
+        results = []
+        for chunk in chunks:
+            if chunk["embedding"] is not None:
+                similarity = np.dot(query_embedding, chunk["embedding"]) / (
+                    np.linalg.norm(query_embedding) * np.linalg.norm(chunk["embedding"])
+                )
+                results.append({
+                    "text": chunk["text"],
+                    "similarity": similarity,
+                    "doc_id": chunk["doc_id"],
+                    "filename": chunk["filename"]
+                })
+        
+        results.sort(key=lambda x: x["similarity"], reverse=True)
+        return results[:top_k]

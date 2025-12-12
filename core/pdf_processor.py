@@ -5,10 +5,10 @@ from agno.knowledge.document.base import Document
 from agno.models.openai import OpenAIChat
 from agno.agent import Agent
 from core.agents import entities_extraction_agent
-import openai
+from openai import OpenAI
 import os
 
-openai.api_key = os.getenv("OPENAI_API_KEY")
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 def extract_text_from_pdf(file_path: str) -> str:
     try:
@@ -47,13 +47,36 @@ def chunk_text(text: str) -> List[str]:
         fallback_size = 1000
         return [text[i:i + fallback_size] for i in range(0, len(text), fallback_size)]
 
-def embed_text(texts: List[str]) -> List[List[float]]:
-    embeddings = []
-    for t in texts:
-        resp = openai.Embedding.create(input=t, model="text-embedding-3-small")
-        emb = resp["data"][0]["embedding"]
-        embeddings.append(emb)
-    return embeddings
+def embed_text(texts: List[str]):
+    if not texts:
+        return []
+    
+    try:
+        response = client.embeddings.create(
+            input=texts,
+            model="text-embedding-3-small"
+        )
+        
+        embeddings = [item.embedding for item in response.data]
+        return embeddings
+        
+    except Exception as e:
+        print(f"⚠️ Batch embedding failed: {e}")
+        print("Falling back to individual embeddings...")
+        
+        embeddings = []
+        for text in texts:
+            try:
+                response = client.embeddings.create(
+                    input=text,
+                    model="text-embedding-3-small"
+                )
+                embeddings.append(response.data[0].embedding)
+            except Exception as e:
+                print(f"⚠️ Failed to embed individual text: {e}")
+                embeddings.append([0.0] * 1536)
+        
+        return embeddings
 
 def extract_entities_from_chunk(chunk: str, extraction_agent: Agent) -> Dict[str, Any]:
     try:

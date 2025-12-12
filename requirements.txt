@@ -8,3 +8,4 @@ pydantic-settings==2.4.0
 sqlalchemy==2.0.36
 neo4j==5.26.0
 pypdf==6.0.0
+numpy==2.3.5

@@ -1,7 +1,7 @@
 import uuid
 from dotenv import load_dotenv
 from services.neo4j_service import Neo4jService
-from core.pdf_processor import extract_text_from_pdf, extract_entities_and_relationships
+from core.pdf_processor import extract_text_from_pdf, extract_entities_and_relationships, embed_text
 from core.agents import query_knowledge_graph
 
 load_dotenv()
@@ -98,18 +98,24 @@ def main():
     pdf_file_path = "data/bitcoin.pdf"
     pdf_filename = "bitcoin.pdf"
     
-    # print("Starting PDF loading pipeline...")
-    # result = load_pipeline(pdf_file_path, pdf_filename, neo4j_service)
-    # print(result)
+    print("Starting PDF loading pipeline...")
+    result = load_pipeline(pdf_file_path, pdf_filename, neo4j_service)
+    print(result)
 
-    # print("Querying the Knowledge Graph")
+    # print("Agent Querying:")
     # answer = query_knowledge_graph("What is bitcoin?")
     # print(f"ANSWER: {answer}")
 
-    print("Querying the Knowledge Graph")
-    answer = neo4j_service.search_graph("bitcoin")
-    print(f"ANSWER: {answer}")
+    # print("Keyword Search:")
+    # answer = neo4j_service.search_graph("bitcoin")
+    # print(f"ANSWER: {answer}")
     
+    print("\nSemantic Search:")
+    semantic_results = neo4j_service.semantic_search("What is bitcoin?", top_k=5)
+    for i, r in enumerate(semantic_results):
+        print(f"\n[{i+1}] Similarity: {r['similarity']:.3f}")
+        print(f"Text: {r['text'][:200]}...")  
+
     neo4j_service.close()
     print("✅ Done!")
 
