@@ -1,110 +1,115 @@
-import os
 from agno.agent import Agent
 from agno.models.openai import OpenAIChat
-from agno.tools.neo4j import Neo4jTools
 from core.models import ExtractedEntities
 
 def entities_extraction_agent():
     return Agent(
         name="PDF Entity Extraction Agent",
         model=OpenAIChat(id="gpt-4o"),
-        description="Extract meaningful entities and relationships from the text chunk.",
+        description="Extract meaningful entities and rich, context-specific relationships from the text chunk.",
         instructions = """
-        You are an information extraction assistant specializing in identifying key concepts and relationships.
-        
-        Task:
-        - Analyze ONLY the given text chunk.
-        - Extract MEANINGFUL entities that represent core concepts, not peripheral details.
-        - Extract relationships between entities that are explicitly supported by the text.
-        
+        You are an expert information extraction assistant specializing in building high-quality knowledge graphs.
+        Your goal is to extract entities and RICH, CONTEXT-SPECIFIC relationships that capture the actual meaning from the text.
+
+        ENTITY EXTRACTION RULES
         Entity Types:
-        - PERSON: Named individuals (authors, researchers, historical figures)
-        - ORGANIZATION: Companies, institutions, research groups
-        - LOCATION: Geographic places, regions, countries
-        - CONCEPT: Key ideas, technologies, methodologies, theories (the main focus)
-        - EVENT: Significant events, conferences, milestones
+        - PERSON: Named individuals (e.g., "Satoshi Nakamoto", "Alan Turing")
+        - ORGANIZATION: Companies, institutions (e.g., "Bitcoin Network", "IEEE")
+        - LOCATION: Geographic places (e.g., "Silicon Valley", "United States")
+        - CONCEPT: Key ideas, technologies, methods (e.g., "Proof-of-Work", "Double-Spending")
+        - EVENT: Significant events, milestones (e.g., "Bitcoin Genesis Block", "2008 Financial Crisis")
+        - TECHNOLOGY: Specific technical systems (e.g., "SHA-256", "Merkle Tree", "Blockchain")
+        - PROBLEM: Issues or challenges (e.g., "Byzantine Generals Problem", "Centralization Risk")
         
-        Entity Extraction Rules (CRITICAL):
-        1. **Minimum length**: Entity names must be at least 3 characters
-        2. **No isolated numbers**: Ignore standalone years, dates, or numeric values unless part of a named entity
-        3. **No single letters**: Ignore variables like "p", "q", "x", "y" unless part of a formula name
-        4. **No generic terms**: Avoid "the system", "the method", "the approach" - use specific names
-        5. **Focus on document core**: Prioritize entities from main content over bibliography/references
-        6. **Context required**: Only extract entities that have clear contextual meaning
-        7. **Avoid acronyms alone**: If you see "CPU", only extract if it's defined/explained in context
-        8. **Skip measurements**: Ignore "10 minutes", "5MB", "100 nodes" unless they're named concepts
+        Quality Rules:
+        ✓ Minimum 3 characters (except well-known acronyms like "CPU", "API")
+        ✓ Use specific names, not generic terms ("Bitcoin" not "the system")
+        ✓ Include technical terms that are defined/explained in context
+        ✓ Extract domain-specific concepts that carry meaning
         
-        Examples of GOOD entities:
-        - "Bitcoin", "Blockchain", "Proof-of-Work", "Merkle Tree"
-        - "Satoshi Nakamoto", "Alan Turing"
-        - "Byzantine Generals Problem", "Double-Spending Attack"
-        - "Peer-to-Peer Network", "Cryptographic Hash Function"
+        ✗ NO standalone dates/numbers ("2008", "10 minutes", "1MB")
+        ✗ NO single variables ("x", "y", "p", "q")
+        ✗ NO generic terms ("the method", "the approach", "the system")
+        ✗ NO unexplained acronyms from citations
         
-        Examples of BAD entities (DO NOT EXTRACT):
-        - "p", "q", "n", "x" (single variables)
-        - "1957", "2008", "April 1980" (standalone dates)
-        - "10 minutes", "512 bits" (measurements)
-        - "IEEE", "ACM" (unexplained acronyms from citations)
-        - Bibliography book titles unless directly discussed in main text
+        RELATIONSHIP EXTRACTION RULES (**CRITICAL**)
         
+        Your relationships MUST capture the ACTUAL SEMANTIC MEANING from the text.
+        Think: "What is the specific action, purpose, or connection described here?"
+        
+        GUIDELINES FOR RICH RELATIONSHIPS:
+        1. **Be Specific and Descriptive**
+        2. **Capture the Action or Purpose**
+        3. **Include Domain Context**
+        4. **Show Directionality Clearly**
+        5. **Multi-word Relationship Types**
+        6. **Only Extract Explicit Relationships**
+        
+        OUTPUT FORMAT:
         Return ONLY valid JSON:
         {
             "entities": [
-                { "name": "...", "type": "PERSON|ORGANIZATION|LOCATION|CONCEPT|EVENT" }
+                { "name": "Bitcoin", "type": "TECHNOLOGY" },
+                { "name": "Satoshi Nakamoto", "type": "PERSON" },
+                { "name": "Double-Spending Attack", "type": "PROBLEM" }
             ],
             "relationships": [
-                { "from_entity": "...", "to_entity": "...", "type": "..." }
+                { 
+                    "from_entity": "Satoshi Nakamoto", 
+                    "to_entity": "Bitcoin", 
+                    "type": "invented" 
+                },
+                { 
+                    "from_entity": "Bitcoin", 
+                    "to_entity": "Double-Spending Attack", 
+                    "type": "prevents_through_proof_of_work" 
+                }
             ]
         }
-        
-        For relationships:
-        - "type" MUST be a specific verb that describes the connection, for example:
-          - "proposed_by", "created_by", "invented_by"
-          - "solves", "addresses", "prevents"
-          - "uses", "implements", "relies_on"
-          - "is_part_of", "contains", "consists_of"
-          - "enables", "requires", "depends_on"
-          - "describes", "defines", "explains"
-        - Do NOT use generic labels like "related", "connected", "associated"
-        - Only create relationships where the connection is clear and explicit
-        
-        Important:
-        - Use only information in the chunk; do NOT rely on outside knowledge
-        - If you're unsure about an entity's relevance, skip it
-        - Prioritize quality over quantity - 5 meaningful entities beat 50 noisy ones
+
+        Analyze ONLY this chunk and extract the knowledge graph:
         """,
         output_schema=ExtractedEntities
     )
 
-def _build_neo4j_tool():
-    uri = os.getenv("NEO4J_URI", "bolt://localhost:7687")
-    user = os.getenv("NEO4J_USER", "neo4j")
-    password = os.getenv("NEO4J_PASSWORD", "password")
+def graphrag_agent(question: str, context_chunks: list, entities: list, relationships: list):
+    chunks_text = "\n\n".join([f"[Chunk {i+1}]: {c}" for i, c in enumerate(context_chunks)])
+    entities_text = "\n".join([f"- {e['name']} ({e['type']})" for e in entities])
+    relationships_text = "\n".join([f"- {r['from']} --[{r['type']}]--> {r['to']}" for r in relationships])
+    
+    agent = Agent(
+        model=OpenAIChat(id="gpt-4o"),
+        instructions=f"""
+        You are a GraphRAG assistant. Use the provided context to answer the question.
 
-    kwargs = {}
-    if uri:
-        kwargs["uri"] = uri
-    if user:
-        kwargs["user"] = user
-    if password:
-        kwargs["password"] = password
+        CONTEXT FROM VECTOR SEARCH (Text Chunks):
+        {chunks_text}
 
-    return Neo4jTools(**kwargs)
+        CONTEXT FROM KNOWLEDGE GRAPH:
 
-def query_knowledge_graph(question: str):
+        Entities:
+        {entities_text}
+
+        Relationships:
+        {relationships_text}
+
+        Rules:
+        1. Use the text chunks AND the graph structure to answer.
+        2. DO NOT repeat or quote the chunk text.
+        3. DO NOT print the context or chunk labels in your answer.
+        4. If useful, you may reference chunks like (Chunk 1), but do NOT paste their content.
+        5. If the answer is not in the context, say "I don't have enough information to answer that."
+        6. Do NOT make up information.
+
+        Only return the final answer. No meta commentary.
+        Question: {question}
+        """,
+        markdown=True
+    )
+    
     try:
-        neo4j_tool = _build_neo4j_tool()
-        agent = Agent(
-            model=OpenAIChat(id="gpt-4o"),
-            tools=[neo4j_tool],
-            instructions=[
-                "You are a graph database assistant. Use only the Neo4j tool to fetch facts.",
-                "Do NOT invent facts. If the graph lacks the info, say so."
-            ],
-            debug_mode=True
-        )
         response = agent.run(question)
         return response.content
     except Exception as e:
-        print(f"Graph Agent Error: {e}")
-        return None
+        print(f"❌ GraphRAG Agent Error: {e}")
+        return f"Error generating answer: {str(e)}"

@@ -2,14 +2,14 @@ import os
 import time
 from neo4j import GraphDatabase
 from core.pdf_processor import embed_text
-import numpy as np
-from typing import List
+from typing import List, Dict
 import re
 
 class Neo4jService:
     def __init__(self):
         self.driver = None
         self._connect()
+        self._setup_vector_index()
     
     def _connect(self):
         """Connect to Neo4j with retry logic"""
@@ -37,6 +37,23 @@ class Neo4jService:
                 else:
                     print(f"❌ Failed to connect to Neo4j after {max_retries} attempts: {e}")
                     raise
+    
+    def _setup_vector_index(self):
+        """Create vector index for semantic search"""
+        with self.driver.session() as session:
+            try:
+                session.run("""
+                    CREATE VECTOR INDEX chunk_embeddings IF NOT EXISTS
+                    FOR (c:Chunk)
+                    ON c.embedding
+                    OPTIONS {indexConfig: {
+                        `vector.dimensions`: 1536,
+                        `vector.similarity_function`: 'cosine'
+                    }}
+                """)
+                print("✅ Vector index created/verified")
+            except Exception as e:
+                print(f"⚠️ Vector index setup: {e}")
     
     def close(self):
         """Close Neo4j connection"""
@@ -68,7 +85,8 @@ class Neo4jService:
         with self.driver.session() as session:
             session.run("CREATE INDEX document_id IF NOT EXISTS FOR (d:Document) ON (d.id)")
             session.run("CREATE INDEX entity_name IF NOT EXISTS FOR (e:Entity) ON (e.name)")
-            print("Indexes created")
+            session.run("CREATE INDEX chunk_id IF NOT EXISTS FOR (c:Chunk) ON (c.id)")
+            print("✅ Indexes created")
     
     def create_document_node(self, doc_id: str, filename: str, content: str):
         """Create a document node in the graph"""
@@ -80,30 +98,45 @@ class Neo4jService:
                     d.created_at = datetime()
             """, doc_id=doc_id, filename=filename, content=content)
 
-    def create_chunk_node(self, chunk_id: str, text: str, embedding: List[float], doc_id: str):
-        """store embedding as list property"""
+    def create_chunk_node(self, chunk_id: str, text: str, chunk_index: int, embedding: List[float], doc_id: str):
+        """Create chunk node with embedding for vector search"""
         with self.driver.session() as session:
             session.run("""
                 MERGE (c:Chunk {id: $chunk_id})
                 SET c.text = $text,
+                    c.index = $chunk_index,
                     c.embedding = $embedding
                 WITH c
                 MATCH (d:Document {id: $doc_id})
                 MERGE (d)-[:HAS_CHUNK]->(c)
-            """, chunk_id=chunk_id, text=text, embedding=embedding, doc_id=doc_id)  
+            """, chunk_id=chunk_id, text=text, chunk_index=chunk_index, 
+                 embedding=embedding, doc_id=doc_id)
+    
+    def create_chunk_relationships(self, chunk_ids: List[str]):
+        """Create NEXT relationships between consecutive chunks"""
+        with self.driver.session() as session:
+            for i in range(len(chunk_ids) - 1):
+                session.run("""
+                    MATCH (c1:Chunk {id: $chunk_id_1})
+                    MATCH (c2:Chunk {id: $chunk_id_2})
+                    MERGE (c1)-[:NEXT]->(c2)
+                """, chunk_id_1=chunk_ids[i], chunk_id_2=chunk_ids[i + 1])
+        
+        print(f"✓ Created {len(chunk_ids) - 1} NEXT relationships between chunks")
 
-    def create_entity(self, entity_name: str, entity_type: str, doc_id: str):
-        """Create an entity node and link it to the document"""
+    def create_entity(self, entity_name: str, entity_type: str, chunk_id: str):
+        """Create an entity node and link it to the chunk it was extracted from"""
         with self.driver.session() as session:
             session.run("""
                 MERGE (e:Entity {name: $name})
                 SET e.type = $type
                 WITH e
-                MATCH (d:Document {id: $doc_id})
-                MERGE (e)-[:MENTIONED_IN]->(d)
-            """, name=entity_name, type=entity_type, doc_id=doc_id)
+                MATCH (c:Chunk {id: $chunk_id})
+                MERGE (e)-[:EXTRACTED_FROM]->(c)
+            """, name=entity_name, type=entity_type, chunk_id=chunk_id)
     
     def create_relationship(self, from_entity: str, to_entity: str, rel_type: str):
+        """Create relationship between entities"""
         rel_label = self._normalize_rel_type(rel_type)
 
         cypher = f"""
@@ -121,111 +154,83 @@ class Neo4jService:
                 rel_type=rel_type,
             )
     
-    def search_graph(self, search_text: str, limit: int = 10):
+    def vector_search(self, query_embedding: List[float], top_k: int = 5) -> List[Dict]:
+        """Perform vector similarity search using Neo4j's vector index"""
         with self.driver.session() as session:
             result = session.run("""
-                // Find entities matching the search term
+                CALL db.index.vector.queryNodes('chunk_embeddings', $top_k, $query_embedding)
+                YIELD node AS c, score
+                MATCH (c)<-[:HAS_CHUNK]-(d:Document)
+                RETURN c.id AS chunk_id, c.text AS text, c.index AS chunk_index,
+                       d.id AS doc_id, d.filename AS filename, score
+                ORDER BY score DESC
+            """, query_embedding=query_embedding, top_k=top_k)
+            
+            return [dict(record) for record in result]
+    
+    def get_entities_from_chunks(self, chunk_ids: List[str]) -> List[Dict]:
+        """Get all entities extracted from specific chunks"""
+        with self.driver.session() as session:
+            result = session.run("""
+                MATCH (e:Entity)-[:EXTRACTED_FROM]->(c:Chunk)
+                WHERE c.id IN $chunk_ids
+                RETURN DISTINCT e.name AS name, e.type AS type
+            """, chunk_ids=chunk_ids)
+            
+            return [dict(record) for record in result]
+    
+    def get_entity_relationships(self, entity_names: List[str], max_hops: int = 2) -> List[Dict]:
+        """Get relationships between entities, following connections up to max_hops"""
+        with self.driver.session() as session:
+            result = session.run(f"""
                 MATCH (e:Entity)
-                WHERE toLower(e.name) CONTAINS toLower($search_text)
-                
-                // Get the document they're mentioned in
-                MATCH (e)-[:MENTIONED_IN]->(d:Document)
-                
-                // Count relationships (for ranking)
-                OPTIONAL MATCH (e)-[r]-(connected:Entity)
-                WITH e, d, count(DISTINCT r) as rel_count, collect(DISTINCT connected) as connected_entities
-                
-                // Get outgoing relationships
-                OPTIONAL MATCH (e)-[r_out]->(e2:Entity)
-                WITH e, d, rel_count, connected_entities,
-                     collect(DISTINCT {entity: e2.name, type: type(r_out), direction: 'outgoing'}) as out_rels
-                
-                // Get incoming relationships
-                OPTIONAL MATCH (e1:Entity)-[r_in]->(e)
-                WITH e, d, rel_count, connected_entities, out_rels,
-                     collect(DISTINCT {entity: e1.name, type: type(r_in), direction: 'incoming'}) as in_rels
-                
-                // Find relevant chunks
-                OPTIONAL MATCH (d)-[:HAS_CHUNK]->(c:Chunk)
-                WHERE toLower(c.text) CONTAINS toLower(e.name)
-                WITH e, d, rel_count, out_rels, in_rels,
-                     collect(c.text)[0..2] as sample_chunks
-                
-                // Return results ranked by connection count
-                RETURN DISTINCT 
-                    e.name as entity_name,
-                    e.type as entity_type,
-                    d.filename as doc_filename,
-                    d.id as doc_id,
-                    rel_count as relationship_count,
-                    out_rels + in_rels as relationships,
-                    sample_chunks as context_chunks
-                ORDER BY rel_count DESC, entity_name
-                LIMIT $limit
-            """, search_text=search_text, limit=limit)
-
-            results = []
+                WHERE e.name IN $entity_names
+                MATCH path = (e)-[r*1..{max_hops}]-(connected:Entity)
+                RETURN DISTINCT
+                    startNode(relationships(path)[0]).name AS from_entity,
+                    type(relationships(path)[0]) AS rel_type,
+                    endNode(relationships(path)[0]).name AS to_entity
+                LIMIT 50
+            """, entity_names=entity_names)
+            
+            relationships = []
             for record in result:
-                # Clean up relationships
-                relationships = [
-                    {
-                        'entity': r['entity'],
-                        'type': r['type'],
-                        'direction': r['direction']
-                    }
-                    for r in record['relationships'] if r['entity']
-                ]
-                
-                results.append({
-                    'entity': record['entity_name'],
-                    'type': record['entity_type'],
-                    'document': record['doc_filename'],
-                    'doc_id': record['doc_id'],
-                    'relationship_count': record['relationship_count'],
-                    'relationships': relationships,
-                    'context': record['context_chunks']
+                relationships.append({
+                    'from': record['from_entity'],
+                    'type': record['rel_type'],
+                    'to': record['to_entity']
                 })
-
-            return results
-
-    def fetch_all_chunks_with_embeddings(self):
-        """Return list of chunks with id, text and embedding"""
-        with self.driver.session() as session:
-            result = session.run("""
-                MATCH (c:Chunk)<-[:HAS_CHUNK]-(d:Document)
-                RETURN c.id AS id, c.text AS text, c.embedding AS embedding, 
-                       d.id as doc_id, d.filename as filename
-            """)
-            rows = []
-            for rec in result:
-                emb = rec["embedding"]
-                rows.append({
-                    "id": rec["id"],
-                    "text": rec["text"],
-                    "embedding": np.array(emb, dtype=float) if emb else None,
-                    "doc_id": rec["doc_id"],
-                    "filename": rec["filename"]
-                })
-            return rows
-
-    def semantic_search(self, query: str, top_k: int = 5):
-        """Semantic search using vector similarity"""
+            
+            return relationships
+    
+    def graphrag_search(self, query: str, top_k: int = 5) -> Dict:
+        """Complete GraphRAG search that combines Vector search, Entity extraction and Relationships"""
         query_embedding = embed_text([query])[0]
+        vector_results = self.vector_search(query_embedding, top_k)
         
-        chunks = self.fetch_all_chunks_with_embeddings()
+        if not vector_results:
+            return {
+                'chunks': [],
+                'entities': [],
+                'relationships': []
+            }
         
-        results = []
-        for chunk in chunks:
-            if chunk["embedding"] is not None:
-                similarity = np.dot(query_embedding, chunk["embedding"]) / (
-                    np.linalg.norm(query_embedding) * np.linalg.norm(chunk["embedding"])
-                )
-                results.append({
-                    "text": chunk["text"],
-                    "similarity": similarity,
-                    "doc_id": chunk["doc_id"],
-                    "filename": chunk["filename"]
-                })
+        chunks = [
+            {
+                'text': r['text'],
+                'score': r['score'],
+                'filename': r['filename']
+             } 
+                  for r in vector_results]
+        chunk_ids = [r['chunk_id'] for r in vector_results]
         
-        results.sort(key=lambda x: x["similarity"], reverse=True)
-        return results[:top_k]
+        entities = self.get_entities_from_chunks(chunk_ids)
+        
+        entity_names = [e['name'] for e in entities]
+        relationships = self.get_entity_relationships(entity_names, max_hops=2) if entity_names else []
+        
+        return {
+            'chunks': chunks,
+            'entities': entities,
+            'relationships': relationships
+        }
