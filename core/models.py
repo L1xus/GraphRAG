@@ -38,3 +38,16 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     answer: str
     context: GraphRAGContext
+
+class UploadResponseStats(BaseModel):
+    text_length: int
+    chunks_count: int
+    entities_count: int
+    relationships_count: int
+
+class UploadResponse(BaseModel):
+    success: bool
+    doc_id: str
+    filename: str
+    stats: Optional[UploadResponseStats] = None
+    error: Optional[str] = None
