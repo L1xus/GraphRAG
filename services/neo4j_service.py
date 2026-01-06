@@ -234,3 +234,137 @@ class Neo4jService:
             'entities': entities,
             'relationships': relationships
         }
+
+    def create_structured_nodes_batch(self, label: str, props_list: List[Dict], primary_key: str):
+        """Batch create nodes with a dynamic Primary Key"""
+        if not props_list:
+            return
+
+        if 'embedding' in props_list[0]:
+            self._ensure_vector_index(label)
+        
+        with self.driver.session() as session:
+            try:
+                constraint_name = f"constraint_{label.lower()}_{primary_key}"
+                session.run(f"""
+                    CREATE CONSTRAINT {constraint_name} IF NOT EXISTS
+                    FOR (n:`{label}`) REQUIRE n.`{primary_key}` IS UNIQUE
+                """)
+            except Exception as e:
+                print(f"⚠️ Constraint warning: {e}")
+
+        query = f"""
+        UNWIND $batch AS row
+        MERGE (n:`{label}` {{ `{primary_key}`: row.`{primary_key}` }})
+        SET n += row
+        """
+        
+        from datetime import date, datetime
+        cleaned_batch = []
+        for row in props_list:
+            new_row = {}
+            for k, v in row.items():
+                if isinstance(v, (date, datetime)):
+                    new_row[k] = v.isoformat()
+                else:
+                    new_row[k] = v
+            cleaned_batch.append(new_row)
+
+        with self.driver.session() as session:
+            session.run(query, batch=cleaned_batch)
+
+    def create_structured_relationship(self, source_label, source_prop, target_label, target_prop, rel_type):
+        """Create relationships between structured nodes based on matching property values"""
+        query = f"""
+        MATCH (s:`{source_label}`)
+        MATCH (t:`{target_label}`)
+        WHERE s.`{source_prop}` = t.`{target_prop}`
+        MERGE (s)-[:{rel_type}]->(t)
+        """
+        print(f"    Executing Link Query: {query.strip()}")
+        with self.driver.session() as session:
+            session.run(query)
+
+    def _ensure_vector_index(self, label: str):
+        """Create a vector index for a specific Node Label"""
+        index_name = f"{label.lower()}_embeddings"
+        with self.driver.session() as session:
+            try:
+                session.run(f"""
+                    CREATE VECTOR INDEX `{index_name}` IF NOT EXISTS
+                    FOR (n:`{label}`)
+                    ON n.embedding
+                    OPTIONS {{indexConfig: {{
+                        `vector.dimensions`: 1536,
+                        `vector.similarity_function`: 'cosine'
+                    }}}}
+                """)
+            except Exception as e:
+                print(f"⚠️ Index creation warning for {label}: {e}")
+
+    def structured_vector_search(self, query_embedding: List[float], label: str, top_k: int = 5):
+        """Vector search for Structured Nodes"""
+        index_name = f"{label.lower()}_embeddings"
+        with self.driver.session() as session:
+            try:
+                result = session.run(f"""
+                    CALL db.index.vector.queryNodes('{index_name}', $top_k, $query_embedding)
+                    YIELD node, score
+                    RETURN node, score
+                """, query_embedding=query_embedding, top_k=top_k)
+                return [dict(record) for record in result]
+            except Exception as e:
+                print(f"⚠️ Structured vector search skipped (Index {index_name} missing): {e}")
+                return []
+
+    def structured_graphrag_search(self, query_embedding: List[float], target_labels: List[str], top_k: int = 5) -> Dict:
+        """RAG retrieval for SQL data"""
+        results = []
+        
+        found_nodes = []
+        for label in target_labels:
+            vector_hits = self.structured_vector_search(query_embedding, label, top_k)
+            for hit in vector_hits:
+                node_data = dict(hit['node'])
+                if 'embedding' in node_data:
+                    del node_data['embedding']
+                found_nodes.append({
+                    "label": label, 
+                    "data": node_data, 
+                    "score": hit['score']
+                })
+        
+        if not found_nodes:
+            return {"nodes": [], "relationships": []}
+
+        node_ids = [n['data'].get('id') for n in found_nodes if n['data'].get('id')]
+        
+        relationships = []
+        if node_ids:
+            with self.driver.session() as session:
+                rel_query = """
+                MATCH (start_node)
+                WHERE start_node.id IN $ids
+                MATCH (start_node)-[r]-(connected_node)
+                RETURN 
+                    labels(start_node)[0] as start_type,
+                    start_node.name as start_name,
+                    start_node.title as start_title,
+                    type(r) as rel_type,
+                    labels(connected_node)[0] as end_type,
+                    connected_node.name as end_name,
+                    connected_node.title as end_title
+                LIMIT 50
+                """
+                rel_results = session.run(rel_query, ids=node_ids)
+                
+                for r in rel_results:
+                    start_label = r['start_name'] or r['start_title'] or "Unknown"
+                    end_label = r['end_name'] or r['end_title'] or "Unknown"
+                    
+                    relationships.append(f"{start_label} ({r['start_type']}) --[{r['rel_type']}]--> {end_label} ({r['end_type']})")
+
+        return {
+            "nodes": found_nodes,
+            "relationships": relationships
+        }

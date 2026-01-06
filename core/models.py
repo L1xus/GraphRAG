@@ -51,3 +51,25 @@ class UploadResponse(BaseModel):
     filename: str
     stats: Optional[UploadResponseStats] = None
     error: Optional[str] = None
+
+class SQLColumnMapping(BaseModel):
+    column_name: str
+    target_property: str
+    is_embedding_candidate: bool = False
+    is_primary_key: bool = False
+
+class SQLNodeMapping(BaseModel):
+    source_table: str
+    target_label: str
+    properties: List[SQLColumnMapping]
+
+class SQLRelationshipMapping(BaseModel):
+    source_table: str
+    source_column: str
+    target_table: str
+    target_column: str
+    relationship_type: str
+
+class GraphSchemaMapping(BaseModel):
+    nodes: List[SQLNodeMapping]
+    relationships: List[SQLRelationshipMapping]

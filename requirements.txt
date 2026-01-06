@@ -5,7 +5,10 @@ openai==1.107.2
 python-dotenv==1.0.1
 pydantic==2.10.3
 pydantic-settings==2.4.0
+requests==2.32.4
+pandas==2.3.2
 sqlalchemy==2.0.36
 neo4j==5.26.0
 pypdf==6.0.0
 numpy==2.3.5
+psycopg2-binary==2.9.11

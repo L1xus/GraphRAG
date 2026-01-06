@@ -18,6 +18,8 @@ services:
     depends_on:
       neo4j:
         condition: service_healthy
+      postgres:
+        condition: service_healthy
     networks:
       - graph-rag-network
 
@@ -45,11 +47,30 @@ services:
     networks:
       - graph-rag-network
 
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_DB: movies_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - graph-rag-network
+
 volumes:
   neo4j_data:
   neo4j_logs:
   neo4j_import:
   neo4j_plugins:
+  postgres_data:
 
 networks:
   graph-rag-network:

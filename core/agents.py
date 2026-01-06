@@ -1,6 +1,6 @@
 from agno.agent import Agent
 from agno.models.openai import OpenAIChat
-from core.models import ExtractedEntities
+from core.models import ExtractedEntities, GraphSchemaMapping
 
 def entities_extraction_agent():
     return Agent(
@@ -112,4 +112,72 @@ def graphrag_agent(question: str, context_chunks: list, entities: list, relation
         return response.content
     except Exception as e:
         print(f"❌ GraphRAG Agent Error: {e}")
+        return f"Error generating answer: {str(e)}"
+
+def sql_schema_agent():
+    return Agent(
+        name="SQL Schema to Graph Mapper",
+        model=OpenAIChat(id="gpt-4o"),
+        description="Map SQL tables to Knowledge Graph Nodes and Relationships.",
+        instructions="""
+        You are an expert Data Architect. Your goal is to convert a Relational Schema (SQL) into a Semantic Knowledge Graph.
+        
+        INPUT DATA:
+        You will receive a list of Tables, Columns, and Sample Data.
+
+        YOUR TASK:
+        1. **Node Mapping**: Map every table to a Node Label (e.g., 'tbl_users' -> 'User'). 
+           - Rename columns to clean properties (e.g., 'dob' -> 'date_of_birth').
+           - Identify which text columns (like 'overview', 'bio', 'review') should be EMBEDDED for Vector Search (`is_embedding_candidate: true`).
+           - IDs, Dates, and Numbers should NOT be embedded.
+
+        2. **Relationship Mapping**: Identify links between tables.
+           - Look for Explicit Foreign Keys.
+           - Look for **Implicit Soft Links** (e.g., Table 'Movies' has 'Star1', Table 'Actors' has 'Name'. Map this!).
+           - Give relationships active verbs (e.g., 'ACTED_IN', 'DIRECTED', 'PURCHASED').
+
+        OUTPUT:
+        Return strict JSON adhering to the `GraphSchemaMapping` schema.
+        """,
+        output_schema=GraphSchemaMapping
+    )
+
+def sql_graphrag_agent(question: str, context: dict):
+    nodes_text = ""
+    for node in context['nodes']:
+        label = node['label']
+        data = node['data']
+        name = data.get('title') or data.get('name') or data.get('id')
+        nodes_text += f"- [{label}] {name}: {data}\n"
+
+    relationships_text = "\n".join(context['relationships'])
+
+    agent = Agent(
+        model=OpenAIChat(id="gpt-4o"),
+        instructions=f"""
+        You are a SQL Data Assistant powered by a Knowledge Graph.
+        
+        CONTEXT FROM DATABASE:
+        
+        Found Entities (via Vector Search):
+        {nodes_text}
+        
+        Connected Relationships (via Graph Traversal):
+        {relationships_text}
+        
+        INSTRUCTIONS:
+        1. Answer the user's question based ONLY on the provided database context.
+        2. If you cite a movie or person, mention specific details (e.g., "The Godfather (1972)").
+        3. Use the relationship data to explain connections (e.g., "Directed by...").
+        4. If the answer is not in the data, say "I cannot find that information in the database."
+        
+        Question: {question}
+        """,
+        markdown=True
+    )
+    
+    try:
+        response = agent.run(question)
+        return response.content
+    except Exception as e:
         return f"Error generating answer: {str(e)}"

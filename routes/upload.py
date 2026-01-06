@@ -1,7 +1,7 @@
 from fastapi import APIRouter, UploadFile, File, HTTPException
 import tempfile
 from services.neo4j_service import Neo4jService
-from core.neo4j_load import load_pipeline
+from core.docs_load import load_pipeline
 from core.models import UploadResponse
 
 router = APIRouter()
