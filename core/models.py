@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import Dict, Any, List, Optional
 
 class Entity(BaseModel):
     name: str
@@ -73,3 +73,16 @@ class SQLRelationshipMapping(BaseModel):
 class GraphSchemaMapping(BaseModel):
     nodes: List[SQLNodeMapping]
     relationships: List[SQLRelationshipMapping]
+
+class StructuredNode(BaseModel):
+    label: str
+    data: Dict[str, Any]
+    score: Optional[float] = None
+
+class StructuredContext(BaseModel):
+    nodes: List[StructuredNode]
+    relationships: List[str]
+
+class StructuredChatResponse(BaseModel):
+    answer: str
+    context: StructuredContext

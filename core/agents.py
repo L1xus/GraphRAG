@@ -1,6 +1,8 @@
 from agno.agent import Agent
 from agno.models.openai import OpenAIChat
 from core.models import ExtractedEntities, GraphSchemaMapping
+from typing import List
+import json
 
 def entities_extraction_agent():
     return Agent(
@@ -181,3 +183,41 @@ def sql_graphrag_agent(question: str, context: dict):
         return response.content
     except Exception as e:
         return f"Error generating answer: {str(e)}"
+
+def label_router_agent(question: str, available_labels: List[str]) -> List[str]:
+    """Decides which Graph Labels to search based on the user's question"""
+    agent = Agent(
+        model=OpenAIChat(id="gpt-4o"),
+        description="You are a Query Router. Your job is to select the most relevant database tables (Labels) for a given question.",
+        instructions=f"""
+        You are given a list of Knowledge Graph Labels (which represent SQL Tables).
+        
+        AVAILABLE LABELS: {json.dumps(available_labels)}
+        
+        USER QUESTION: "{question}"
+        
+        TASK:
+        1. Identify which Labels are most likely to contain the answer.
+        2. Return a JSON list of strings.
+        3. If you are unsure, include all potentially relevant labels.
+        4. Do NOT make up labels. Only use the ones provided.
+        
+        Example:
+        Labels: ["Movie", "Actor", "Director", "Studio"]
+        Question: "Who directed The Godfather?"
+        Output: ["Movie", "Director"]
+        """,
+        markdown=False 
+    )
+    
+    try:
+        response = agent.run(f"Select labels for: {question}")
+        content = response.content.strip()
+        start = content.find('[')
+        end = content.rfind(']') + 1
+        if start != -1 and end != -1:
+            return json.loads(content[start:end])
+        return available_labels
+    except Exception as e:
+        print(f"⚠️ Router failed: {e}. Defaulting to all labels.")
+        return available_labels

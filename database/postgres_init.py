@@ -167,17 +167,13 @@ def init_db():
         if os.path.exists(actors_file):
             process_actors(conn, actors_file)
         else:
-            print(f"Skipping actors: {actors_file} not found (checking sandbox/data/...)")
-            if os.path.exists('sandbox/data/actors.csv'):
-                 process_actors(conn, 'sandbox/data/actors.csv')
+            print(f"Couldn't find actors in {actors_file}!")
 
         movies_file = 'data/movies.csv'
         if os.path.exists(movies_file):
             process_movies(conn, movies_file)
         else:
-            print(f"Skipping movies: {movies_file} not found (checking sandbox/data/...)")
-            if os.path.exists('sandbox/data/movies.csv'):
-                 process_movies(conn, 'sandbox/data/movies.csv')
+            print(f"Couldn't find movies in {movies_file}!")
 
         conn.close()
         print("✓ Database initialization complete.")

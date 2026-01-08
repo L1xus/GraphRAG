@@ -5,10 +5,13 @@ from core.models import (
     GraphRAGContext,
     RAGChunk,
     RAGEntity,
-    RAGRelationship
+    RAGRelationship,
+    StructuredChatResponse,
+    StructuredContext,
+    StructuredNode
 )
 from services.neo4j_service import Neo4jService
-from core.agents import graphrag_agent
+from core.agents import graphrag_agent, sql_graphrag_agent, label_router_agent
 
 router = APIRouter()
 
@@ -54,6 +57,41 @@ async def chat(req: ChatRequest):
                     for r in rag_context["relationships"]
                 ]
             )
+        )
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/chat/structured", response_model=StructuredChatResponse)
+async def chat_structured(req: ChatRequest):
+    try:
+        all_labels = neo4j_service.get_all_labels()
+
+        target_labels = label_router_agent(req.question, all_labels)
+        print(f"Router selected: {target_labels}")
+
+        rag_context = neo4j_service.structured_graphrag_search(
+            query=req.question,
+            target_labels=target_labels, 
+            top_k=5
+        )
+
+        answer = sql_graphrag_agent(req.question, rag_context)
+
+        response_context = StructuredContext(
+            nodes=[
+                StructuredNode(
+                    label=n["label"],
+                    data=n["data"],
+                    score=n["score"]
+                ) for n in rag_context["nodes"]
+            ],
+            relationships=rag_context["relationships"]
+        )
+
+        return StructuredChatResponse(
+            answer=answer,
+            context=response_context
         )
 
     except Exception as e:

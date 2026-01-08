@@ -317,9 +317,9 @@ class Neo4jService:
                 print(f"⚠️ Structured vector search skipped (Index {index_name} missing): {e}")
                 return []
 
-    def structured_graphrag_search(self, query_embedding: List[float], target_labels: List[str], top_k: int = 5) -> Dict:
-        """RAG retrieval for SQL data"""
-        results = []
+    def structured_graphrag_search(self, query: str, target_labels: List[str], top_k: int = 5) -> Dict:
+        """Complete RAG retrieval for SQL data"""
+        query_embedding = embed_text([query])[0]
         
         found_nodes = []
         for label in target_labels:
@@ -337,7 +337,10 @@ class Neo4jService:
         if not found_nodes:
             return {"nodes": [], "relationships": []}
 
-        node_ids = [n['data'].get('id') for n in found_nodes if n['data'].get('id')]
+        node_ids = []
+        for n in found_nodes:
+            if 'id' in n['data']:
+                node_ids.append(n['data']['id'])
         
         relationships = []
         if node_ids:
@@ -348,19 +351,21 @@ class Neo4jService:
                 MATCH (start_node)-[r]-(connected_node)
                 RETURN 
                     labels(start_node)[0] as start_type,
-                    start_node.name as start_name,
-                    start_node.title as start_title,
+                    properties(start_node) as start_props,
                     type(r) as rel_type,
                     labels(connected_node)[0] as end_type,
-                    connected_node.name as end_name,
-                    connected_node.title as end_title
+                    properties(connected_node) as end_props
                 LIMIT 50
                 """
+                
                 rel_results = session.run(rel_query, ids=node_ids)
                 
                 for r in rel_results:
-                    start_label = r['start_name'] or r['start_title'] or "Unknown"
-                    end_label = r['end_name'] or r['end_title'] or "Unknown"
+                    start_props = r['start_props']
+                    end_props = r['end_props']
+                    
+                    start_label = start_props.get('name') or start_props.get('title') or start_props.get('series_title') or start_props.get('full_nm') or "Entity"
+                    end_label = end_props.get('name') or end_props.get('title') or end_props.get('series_title') or end_props.get('full_nm') or "Entity"
                     
                     relationships.append(f"{start_label} ({r['start_type']}) --[{r['rel_type']}]--> {end_label} ({r['end_type']})")
 
@@ -368,3 +373,10 @@ class Neo4jService:
             "nodes": found_nodes,
             "relationships": relationships
         }
+
+    def get_all_labels(self) -> List[str]:
+        """Fetch all unique Node Labels currently in the graph"""
+        with self.driver.session() as session:
+            result = session.run("CALL db.labels()")
+            labels = [r[0] for r in result]
+            return labels
